@@ -1,2 +1,2 @@
-0 malignant
-1 benign
+benign
+malignant

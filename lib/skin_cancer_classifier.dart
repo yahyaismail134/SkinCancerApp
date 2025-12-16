@@ -73,9 +73,8 @@ class SkinCancerClassifier {
     );
 
     // Convert to appropriate input format based on model type
-    // model_unquant.tflite typically expects [0, 255] float range
-    // (Teachable Machine unquantized models use this convention)
-    final input = _imageToFloat32List(resizedImage, normalize: false);
+    // MobileNetV2 fine-tuned models typically expect normalized [0.0, 1.0] input
+    final input = _imageToFloat32List(resizedImage, normalize: true);
 
     // Prepare output buffer [1, num_classes]
     final outputShape = _interpreter!.getOutputTensor(0).shape;
@@ -86,28 +85,72 @@ class SkinCancerClassifier {
     _interpreter!.run(input, output);
 
     // Get results
-    final probabilities = (output[0] as List<double>);
+    final rawOutput = (output[0] as List<double>);
 
-    // Find the class with highest probability
-    int maxIndex = 0;
-    double maxProb = probabilities[0];
-    for (int i = 1; i < probabilities.length; i++) {
-      if (probabilities[i] > maxProb) {
-        maxProb = probabilities[i];
-        maxIndex = i;
+    // Debug: Log output info
+    print(
+        'DEBUG: Model outputs ${rawOutput.length} classes, labels.txt has ${_labels.length} classes');
+    print('DEBUG: Raw output values: $rawOutput');
+
+    // Handle sigmoid binary output (1 class = malignant probability)
+    // vs softmax output (2+ classes)
+    late List<double> probabilities;
+    late String label;
+    late double confidence;
+    late Map<String, double> allProbs;
+
+    if (rawOutput.length == 1) {
+      // Sigmoid output: single value represents probability of positive class (malignant)
+      final malignantProb = rawOutput[0];
+      final benignProb = 1.0 - malignantProb;
+
+      print(
+          'DEBUG: Sigmoid output - Benign: ${benignProb * 100}%, Malignant: ${malignantProb * 100}%');
+
+      // Determine prediction based on 0.5 threshold
+      if (malignantProb > 0.5) {
+        label = 'malignant';
+        confidence = malignantProb * 100;
+      } else {
+        label = 'benign';
+        confidence = benignProb * 100;
+      }
+
+      allProbs = {
+        'benign': benignProb * 100,
+        'malignant': malignantProb * 100,
+      };
+    } else {
+      // Softmax output: multiple classes
+      probabilities = rawOutput;
+
+      // Find the class with highest probability
+      int maxIndex = 0;
+      double maxProb = probabilities[0];
+      for (int i = 1; i < probabilities.length; i++) {
+        if (probabilities[i] > maxProb) {
+          maxProb = probabilities[i];
+          maxIndex = i;
+        }
+      }
+
+      label = maxIndex < _labels.length ? _labels[maxIndex] : 'unknown';
+      confidence = maxProb * 100;
+
+      // Build allProbabilities map
+      allProbs = {};
+      for (int i = 0; i < _labels.length && i < probabilities.length; i++) {
+        allProbs[_labels[i]] = probabilities[i] * 100;
+      }
+      for (int i = _labels.length; i < probabilities.length; i++) {
+        allProbs['Class $i'] = probabilities[i] * 100;
       }
     }
-
-    final label = maxIndex < _labels.length ? _labels[maxIndex] : 'unknown';
-    final confidence = maxProb * 100; // Convert to percentage
 
     return ClassificationResult(
       label: label,
       confidence: confidence,
-      allProbabilities: Map.fromIterables(
-        _labels,
-        probabilities.map((p) => p * 100),
-      ),
+      allProbabilities: allProbs,
     );
   }
 
